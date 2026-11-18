@@ -270,6 +270,17 @@ function leaders(){
 }
 
 
+function seasonPicker(){
+ return '<label>조회 시즌</label><select id="seasonPicker">'+
+ db.seasons.map(s=>
+  '<option value="'+esc(s.id)+'" '+
+  (s.id===season?"selected":"")+'>'+
+  esc(s.name)+(s.active?" · 진행 중":"")+
+  '</option>'
+ ).join("")+"</select>";
+}
+
+
 
 function ranks(list){
  let rank=0;
