@@ -1,1 +1,372 @@
 
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#10213d">
+<title>JOKGU LEAGUE v1.0</title>
+<style>
+:root{font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;color:#eaf1fc;background:#0c1627}
+*{box-sizing:border-box}
+body{margin:0}
+header{background:linear-gradient(120deg,#142642,#19539a);padding:24px 16px}
+header small{color:#a7d0ff;letter-spacing:2px}
+h1{margin:5px 0;font-size:26px}
+h2{font-size:19px;margin:0 0 15px}
+h3{font-size:15px;margin:16px 0 8px}
+main{max-width:900px;margin:auto;padding:14px}
+nav{display:flex;gap:7px;overflow:auto;padding:12px 0}
+button{cursor:pointer;font:inherit}
+nav button,.secondary{background:#263d5c;color:white;border:1px solid #425d7e;border-radius:10px;padding:11px}
+nav button.on,.primary{background:#126dcb;color:white;border:0;border-radius:10px;padding:12px;font-weight:700}
+.panel{background:#172942;border:1px solid #304966;border-radius:15px;padding:16px;margin:12px 0}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.stat{text-align:center;background:#233b59;border-radius:10px;padding:13px 5px}
+.stat b{display:block;font-size:22px}
+.stat small,.muted{color:#a6bbd6;font-size:12px}
+input,select{width:100%;padding:12px;background:#0c192c;color:white;border:1px solid #48617f;border-radius:9px}
+label{display:block;margin:12px 0 5px;color:#b4c7df;font-size:12px}
+.wide{width:100%;margin-top:12px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 0;border-bottom:1px solid #34445b}
+.row:last-child{border:0}
+.notice{background:#29405d;padding:12px;border-radius:10px;font-size:13px;margin:10px 0}
+.danger{background:#783044}
+.mini{font-size:12px;padding:7px}
+.good{color:#87dfb2}
+#toast{position:fixed;bottom:20px;left:5%;width:90%;text-align:center;background:#285e93;padding:13px;border-radius:10px;display:none;z-index:10}
+</style>
+</head>
+<body>
+<header>
+<small>JOKGU LEAGUE</small>
+<h1>JL · SEASON RANKINGS</h1>
+<div class="muted">모두가 함께 기록하는 족구 리그</div>
+</header>
+<main>
+<div id="status" class="notice">데이터 연결 중...</div>
+<nav id="nav"></nav>
+<div id="app"></div>
+</main>
+<div id="toast"></div>
+<script>
+const API_BASE="https://fwwzuiqbfrbcxdcnbjiq.supabase.co/functions/v1/jokgu-league";
+
+let db={players:[],matches:[],seasons:[]};
+let tab="home",season="",stats={},busy=false,editing=null;
+const el=id=>document.getElementById(id);
+const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt=v=>Math.round(v).toLocaleString("ko-KR");
+const tier=r=>r>=1600?"CHALLENGER":r>=1400?"DIAMOND":r>=1200?"PLATINUM":r>=1000?"GOLD":r>=800?"SILVER":"BRONZE";
+const playerName=id=>db.players.find(p=>p.id===id)?.name||"알 수 없음";
+
+function notify(message){
+ const t=el("toast");
+ t.textContent=message;
+ t.style.display="block";
+ setTimeout(()=>t.style.display="none",3000);
+}
+
+async function api(query,options={}){
+ const r=await fetch(API_BASE+"?api="+query,{
+  ...options,
+  cache:"no-store"
+ });
+ const j=await r.json();
+ if(!r.ok||j.error)throw Error(j.error||"서버 오류");
+ return j;
+}
+
+async function load(){
+ if(busy)return;
+ try{
+  db=await api("state");
+  if(!db.seasons.some(s=>s.id===season))
+   season=db.seasons.find(s=>s.active)?.id||db.seasons[0]?.id||"";
+  calculate();
+  el("status").textContent="● 온라인 연결 · 최신 기록 동기화";
+  render();
+ }catch(e){
+  el("status").textContent="연결 오류: "+e.message;
+ }
+}
+
+async function write(action,data,admin=false){
+ let password=null;
+ if(admin){
+  password=prompt("관리자 비밀번호");
+  if(password===null)return false;
+  if(!password){notify("비밀번호를 입력하세요");return false;}
+ }
+ busy=true;
+ try{
+  await api("write",{
+   method:"POST",
+   headers:{"Content-Type":"application/json"},
+   body:JSON.stringify({action,data,password})
+  });
+  busy=false;
+  notify("저장 완료");
+  await load();
+  return true;
+ }catch(e){
+  busy=false;
+  notify("오류: "+e.message);
+  return false;
+ }
+}
+
+function calculate(){
+ stats={};
+ db.players.forEach(p=>stats[p.id]={rp:1000,w:0,l:0,sw:0,sl:0});
+ const games=db.matches.filter(m=>m.season_id===season)
+ .slice().sort((a,b)=>String(a.created_at).localeCompare(String(b.created_at))||String(a.id).localeCompare(String(b.id)));
+ for(const m of games){
+  const a=m.team_a,b=m.team_b;
+  if(a.length!==4||b.length!==4||![...a,...b].every(id=>stats[id]))continue;
+  const ra=a.reduce((n,id)=>n+stats[id].rp,0)/4;
+  const rb=b.reduce((n,id)=>n+stats[id].rp,0)/4;
+  const expected=1/(1+Math.pow(10,(rb-ra)/400));
+  const change=32*((m.winner==="A"?1:0)-expected);
+  for(const id of a){
+   const s=stats[id];s.rp+=change;
+   s.w+=m.winner==="A"?1:0;
+   s.l+=m.winner==="B"?1:0;
+   s.sw+=m.winner==="A"?2:m.loser_sets;
+   s.sl+=m.winner==="A"?m.loser_sets:2;
+  }
+  for(const id of b){
+   const s=stats[id];s.rp-=change;
+   s.w+=m.winner==="B"?1:0;
+   s.l+=m.winner==="A"?1:0;
+   s.sw+=m.winner==="B"?2:m.loser_sets;
+   s.sl+=m.winner==="B"?m.loser_sets:2;
+  }
+ }
+}
+
+function leaders(){
+ return db.players.map(p=>({...p,...stats[p.id]}))
+ .sort((a,b)=>b.rp-a.rp||b.w-a.w||a.name.localeCompare(b.name,"ko"));
+}
+
+function seasonPicker(){
+ return '<label>조회 시즌</label><select id="seasonPicker">'+
+ db.seasons.map(s=>'<option value="'+s.id+'" '+(s.id===season?"selected":"")+'>'+
+ esc(s.name)+(s.active?" · 진행 중":"")+"</option>").join("")+"</select>";
+}
+
+function ranks(list){
+ return list.map((p,i)=>'<div class="row"><span style="color:#f8cd71">'+(i+1)+'</span>'+
+ '<div style="flex:1"><b>'+esc(p.name)+'</b><div class="muted">'+tier(p.rp)+
+ " · "+p.w+"승 "+p.l+"패 · "+(p.w+p.l?Math.round(100*p.w/(p.w+p.l)):0)+"%</div></div>"+
+ "<b>"+fmt(p.rp)+" RP</b></div>").join("")||
+ '<p class="muted">선수가 없습니다.</p>';
+}
+
+function home(){
+ const top=leaders();
+ return '<section class="panel">'+seasonPicker()+
+ '<h2 style="margin-top:16px">리그 현황</h2><div class="stats">'+
+ '<div class="stat"><b>'+db.players.length+'</b><small>선수</small></div>'+
+ '<div class="stat"><b>'+db.matches.filter(m=>m.season_id===season).length+'</b><small>경기</small></div>'+
+ '<div class="stat"><b>'+fmt(top[0]?.rp||1000)+'</b><small>최고 RP</small></div></div></section>'+
+ '<section class="panel"><h2>TOP 10</h2>'+ranks(top.slice(0,10))+'</section>'+
+ '<button class="primary wide" data-tab="match">+ 경기 등록</button>';
+}
+
+function ranking(){
+ return '<section class="panel">'+seasonPicker()+
+ '<h2 style="margin-top:15px">개인 랭킹</h2>'+ranks(leaders())+
+ '<p class="muted">시즌 시작 1,000 RP · Elo K=32</p></section>';
+}
+
+function players(){
+ return '<section class="panel"><h2>선수 등록</h2>'+
+ '<label>선수 이름</label><input id="name" maxlength="24">'+
+ '<label>소속 (선택)</label><input id="team" maxlength="40">'+
+ '<button class="primary wide" data-action="addPlayer">등록</button></section>'+
+ '<section class="panel"><h2>선수 목록</h2>'+
+ db.players.map(p=>'<div class="row"><div><b>'+esc(p.name)+
+ '</b><div class="muted">'+esc(p.team||"소속 없음")+'</div></div>'+
+ '<div><button class="secondary mini" data-action="editPlayer" data-id="'+p.id+'">수정</button> '+
+ '<button class="secondary mini danger" data-action="deletePlayer" data-id="'+p.id+'">삭제</button></div></div>').join("")+
+ "</section>";
+}
+
+function options(){
+ return '<option value="">선수 선택</option>'+db.players.map(p=>
+ '<option value="'+p.id+'">'+esc(p.name)+"</option>").join("");
+}
+
+function slots(side){
+ return '<div class="grid">'+[0,1,2,3].map(()=>
+ '<select class="slot" data-side="'+side+'">'+options()+"</select>").join("")+"</div>";
+}
+
+function match(){
+ const active=db.seasons.find(s=>s.active);
+ if(!active)return '<section class="panel">활성 시즌이 없습니다.</section>';
+ return '<section class="panel"><h2>'+(editing?"경기 수정":"경기 등록")+"</h2>"+
+ '<div class="notice">4:4 · 3판 2선승 · '+esc(active.name)+'</div>'+
+ '<h3>A팀</h3>'+slots("A")+'<h3>B팀</h3>'+slots("B")+
+ '<button class="secondary wide" data-action="balance">RP 균형 팀 편성</button>'+
+ '<label>승리 팀</label><select id="winner"><option value="A">A팀</option><option value="B">B팀</option></select>'+
+ '<label>최종 결과</label><select id="loserSets"><option value="0">2:0</option><option value="1">2:1</option></select>'+
+ '<button class="primary wide" data-action="addMatch">'+(editing?"수정 저장":"경기 결과 저장")+"</button>"+
+ (editing?'<button class="secondary wide" data-action="cancelEdit">수정 취소</button>':"")+
+ "</section>";
+}
+
+function history(){
+ const games=db.matches.filter(m=>m.season_id===season).slice()
+ .sort((a,b)=>String(b.created_at).localeCompare(String(a.created_at)));
+ return '<section class="panel">'+seasonPicker()+
+ '<h2 style="margin-top:15px">경기 이력</h2>'+
+ (games.map(m=>'<div class="row"><div style="flex:1">'+
+ '<b>'+new Date(m.created_at).toLocaleString("ko-KR")+'</b>'+
+ '<div class="muted">A: '+esc(m.team_a.map(playerName).join(", "))+'</div>'+
+ '<div class="muted">B: '+esc(m.team_b.map(playerName).join(", "))+'</div>'+
+ '<div class="good">'+m.winner+'팀 승 · 2:'+m.loser_sets+'</div></div>'+
+ '<div><button class="secondary mini" data-action="editMatch" data-id="'+m.id+'">수정</button>'+
+ '<br><button class="secondary mini danger" data-action="deleteMatch" data-id="'+m.id+'">삭제</button></div></div>').join("")||
+ '<p class="muted">경기 기록이 없습니다.</p>')+"</section>";
+}
+
+function seasons(){
+ return '<section class="panel"><h2>시즌 관리</h2>'+
+ '<p class="muted">시즌 생성과 전환은 관리자 전용입니다.</p>'+
+ '<label>새 시즌 이름</label><input id="newSeason" maxlength="60" placeholder="2027 SPRING">'+
+ '<button class="primary wide" data-action="newSeason">새 시즌 시작</button></section>'+
+ '<section class="panel"><h2>시즌 목록</h2>'+
+ db.seasons.map(s=>'<div class="row"><b>'+esc(s.name)+(s.active?" · 진행 중":"")+
+ '</b>'+(s.active?"":'<button class="secondary mini" data-action="activateSeason" data-id="'+s.id+'">전환</button>')+
+ "</div>").join("")+
+ '<button class="secondary wide" data-action="backup">전체 기록 백업</button></section>';
+}
+
+const tabs=[
+ ["home","홈"],["match","경기 등록"],["ranking","랭킹"],
+ ["players","선수"],["history","경기 이력"],["seasons","시즌"]
+];
+
+function render(){
+ el("nav").innerHTML=tabs.map(([id,label])=>
+ '<button data-tab="'+id+'" class="'+(tab===id?"on":"")+'">'+label+"</button>").join("");
+ el("app").innerHTML=({home,match,ranking,players,history,seasons}[tab])();
+ if(tab==="match"&&editing){
+  const selectors=[...document.querySelectorAll(".slot")];
+  [...editing.team_a,...editing.team_b].forEach((id,i)=>selectors[i].value=id);
+  el("winner").value=editing.winner;
+  el("loserSets").value=String(editing.loser_sets);
+ }
+}
+
+function balance(){
+ const selects=[...document.querySelectorAll(".slot")];
+ const ids=selects.map(s=>s.value);
+ if(ids.some(x=>!x)||new Set(ids).size!==8)
+  return notify("서로 다른 선수 8명을 선택하세요");
+ let best=[],score=Infinity;
+ for(let mask=0;mask<256;mask++){
+  const a=ids.filter((_,i)=>(mask>>i)&1);
+  if(a.length!==4)continue;
+  const b=ids.filter(id=>!a.includes(id));
+  const diff=Math.abs(
+   a.reduce((n,id)=>n+(stats[id]?.rp||1000),0)-
+   b.reduce((n,id)=>n+(stats[id]?.rp||1000),0)
+  );
+  if(diff<score){score=diff;best=[...a,...b];}
+ }
+ selects.forEach((s,i)=>s.value=best[i]);
+ notify("RP 균형 편성 완료");
+}
+
+async function act(action,id){
+ if(action==="addPlayer"){
+  const name=el("name").value.trim(),team=el("team").value.trim();
+  if(!name)return notify("이름을 입력하세요");
+  return write("player_add",{name,team});
+ }
+ if(action==="editPlayer"){
+  const p=db.players.find(x=>x.id===id);
+  const name=prompt("선수 이름",p.name);
+  if(name===null)return;
+  const team=prompt("소속",p.team||"");
+  if(team===null)return;
+  return write("player_edit",{id,name:name.trim(),team:team.trim()},true);
+ }
+ if(action==="deletePlayer"){
+  if(confirm("선수를 삭제할까요?"))
+   return write("player_delete",{id},true);
+ }
+ if(action==="balance")return balance();
+ if(action==="cancelEdit"){
+  editing=null;return render();
+ }
+ if(action==="addMatch"){
+  const team_a=[...document.querySelectorAll('[data-side="A"]')].map(x=>x.value);
+  const team_b=[...document.querySelectorAll('[data-side="B"]')].map(x=>x.value);
+  const ids=[...team_a,...team_b];
+  if(ids.some(x=>!x)||new Set(ids).size!==8)
+   return notify("서로 다른 선수 8명을 선택하세요");
+  if(!confirm("경기 결과를 저장할까요?"))return;
+  const data={
+   team_a,team_b,
+   winner:el("winner").value,
+   loser_sets:Number(el("loserSets").value)
+  };
+  if(editing)data.id=editing.id;
+  const ok=await write(editing?"match_edit":"match_add",data,!!editing);
+  if(ok){editing=null;tab="history";render();}
+  return;
+ }
+ if(action==="editMatch"){
+  editing=db.matches.find(x=>x.id===id);
+  tab="match";render();return;
+ }
+ if(action==="deleteMatch"){
+  if(confirm("경기를 삭제할까요?"))
+   return write("match_delete",{id},true);
+ }
+ if(action==="newSeason"){
+  const name=el("newSeason").value.trim();
+  if(!name)return notify("시즌 이름을 입력하세요");
+  if(confirm("새 시즌을 시작할까요?"))
+   return write("season_create",{name},true);
+ }
+ if(action==="activateSeason"){
+  if(confirm("이 시즌으로 전환할까요?"))
+   return write("season_activate",{id},true);
+ }
+ if(action==="backup"){
+  const blob=new Blob([JSON.stringify(db,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url;a.download="jokgu-backup.json";a.click();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }
+}
+
+document.addEventListener("click",e=>{
+ const b=e.target.closest("[data-tab],[data-action]");
+ if(!b)return;
+ if(b.dataset.tab){tab=b.dataset.tab;render();}
+ else act(b.dataset.action,b.dataset.id);
+});
+
+document.addEventListener("change",e=>{
+ if(e.target.id==="seasonPicker"){
+  season=e.target.value;calculate();render();
+ }
+});
+
+load();
+setInterval(()=>{
+ if(!busy&&!document.querySelector("input:focus,select:focus"))load();
+},15000);
+</script>
+</body>
+</html>
+
