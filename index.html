@@ -5,7 +5,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="theme-color" content="#10213d">
-<title>JOKGU LEAGUE v1.1</title>
+<title>JOKGU LEAGUE v1.2</title>
 <style>
 :root{
  font-family:system-ui,-apple-system,"Noto Sans KR",sans-serif;
@@ -74,7 +74,7 @@ label{display:block;margin:12px 0 5px;color:#b4c7df;font-size:12px}
 </head>
 <body>
 <header>
-<small>JOKGU LEAGUE · v1.1</small>
+<small>JOKGU LEAGUE · v1.2</small>
 <h1>JL · SEASON RANKINGS</h1>
 <div class="muted">모두가 함께 기록하는 족구 리그</div>
 </header>
@@ -107,12 +107,15 @@ const esc=v=>String(v??"").replace(/[&<>"']/g,c=>({
  '"':"&quot;","'":"&#39;"
 }[c]));
 const fmt=v=>Math.round(v).toLocaleString("ko-KR");
-const tier=r=>
+
+const tier=(r,games=1)=>
+ games===0?"UNRANKED":
  r>=1600?"CHALLENGER":
  r>=1400?"DIAMOND":
  r>=1200?"PLATINUM":
  r>=1000?"GOLD":
  r>=800?"SILVER":"BRONZE";
+
 const playerName=id=>
  db.players.find(p=>p.id===id)?.name||"알 수 없음";
 
@@ -243,53 +246,112 @@ function calculate(){
  }
 }
 
+
 function leaders(){
  return db.players.map(p=>({
   ...p,...stats[p.id]
- })).sort((a,b)=>
-  b.rp-a.rp||b.w-a.w||a.name.localeCompare(b.name,"ko")
- );
+ })).sort((a,b)=>{
+  const gamesA=a.w+a.l;
+  const gamesB=b.w+b.l;
+
+  // 경기 참가자를 UNRANKED보다 위에 표시
+  if((gamesA>0)!==(gamesB>0))
+   return gamesA>0?-1:1;
+
+  // UNRANKED 선수는 이름순
+  if(gamesA===0&&gamesB===0)
+   return a.name.localeCompare(b.name,"ko");
+
+  // 랭크 선수는 RP 높은 순
+  return b.rp-a.rp||
+   b.w-a.w||
+   a.name.localeCompare(b.name,"ko");
+ });
 }
 
-function seasonPicker(){
- return '<label>조회 시즌</label><select id="seasonPicker">'+
- db.seasons.map(s=>
-  '<option value="'+esc(s.id)+'" '+
-  (s.id===season?"selected":"")+'>'+
-  esc(s.name)+(s.active?" · 진행 중":"")+
-  '</option>'
- ).join("")+"</select>";
 }
+
 
 function ranks(list){
- return list.map((p,i)=>
-  '<div class="row">'+
-  '<span style="color:#f8cd71">'+(i+1)+'</span>'+
-  '<div style="flex:1"><b>'+esc(p.name)+'</b>'+
-  '<div class="muted">'+tier(p.rp)+
-  ' · '+p.w+'승 '+p.l+'패 · '+
-  (p.w+p.l?Math.round(100*p.w/(p.w+p.l)):0)+
-  '%</div></div>'+
-  '<b>'+fmt(p.rp)+' RP</b></div>'
- ).join("")||'<p class="muted">선수가 없습니다.</p>';
+ let rank=0;
+
+ return list.map(p=>{
+  const games=p.w+p.l;
+  const unranked=games===0;
+
+  if(!unranked)rank++;
+
+  const rankText=unranked?"—":rank;
+  const tierText=tier(p.rp,games);
+  const rpText=unranked?"배치 대기":fmt(p.rp)+" RP";
+
+  return '<div class="row">'+
+   '<span style="color:'+
+   (unranked?"#8295ae":"#f8cd71")+
+   ';min-width:24px">'+rankText+'</span>'+
+
+   '<div style="flex:1;min-width:0">'+
+   '<b>'+esc(p.name)+'</b>'+
+
+   '<div class="muted">'+
+   (unranked?
+    '<span class="tag">UNRANKED</span> · 0경기':
+    tierText+' · '+p.w+'승 '+p.l+'패 · '+
+    Math.round(100*p.w/games)+'%')+
+   '</div></div>'+
+
+   '<b style="color:'+
+   (unranked?"#9aabc2":"#eaf1fc")+
+   '">'+rpText+'</b></div>';
+ }).join("")||
+ '<p class="muted">선수가 없습니다.</p>';
 }
+
+
 
 function home(){
  const top=leaders();
- const count=db.matches.filter(m=>m.season_id===season).length;
+
+ const ranked=top.filter(p=>p.w+p.l>0);
+
+ const count=db.matches.filter(
+  m=>m.season_id===season
+ ).length;
+
+ const highestRP=ranked.length?
+  fmt(ranked[0].rp):"—";
+
  return '<section class="panel">'+seasonPicker()+
  '<h2 style="margin-top:16px">리그 현황</h2>'+
+
  '<div class="stats">'+
  '<div class="stat"><b>'+db.players.length+
- '</b><small>선수</small></div>'+
+ '</b><small>전체 선수</small></div>'+
+
  '<div class="stat"><b>'+count+
  '</b><small>경기</small></div>'+
- '<div class="stat"><b>'+fmt(top[0]?.rp||1000)+
- '</b><small>최고 RP</small></div></div></section>'+
+
+ '<div class="stat"><b>'+highestRP+
+ '</b><small>최고 RP</small></div>'+
+ '</div>'+
+
+ '<div class="notice">랭크 등록 '+
+ ranked.length+'명 · UNRANKED '+
+ (db.players.length-ranked.length)+'명</div>'+
+
+ '</section>'+
+
  '<section class="panel"><h2>TOP 10</h2>'+
- ranks(top.slice(0,10))+'</section>'+
- '<button class="primary wide" data-tab="match">+ 경기 등록</button>';
+ ranks(ranked.slice(0,10))+
+ (ranked.length===0?
+ '<p class="muted">아직 랭크 선수가 없습니다.</p>':
+ '')+
+ '</section>'+
+
+ '<button class="primary wide" data-tab="match">'+
+ '+ 경기 등록</button>';
 }
+
 
 function ranking(){
  return '<section class="panel">'+seasonPicker()+
